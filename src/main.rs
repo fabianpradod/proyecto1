@@ -5,7 +5,7 @@ use petgraph::graph::{NodeIndex};
 use petgraph::Graph;
 use petgraph::Directed;
 use std::process::Command;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet, BTreeSet};
 
 // Fabian Prado - Sofia Lopez
 // Laboratorio 4 - Teoría de la Computación
@@ -728,33 +728,451 @@ impl NFASimulator {
     }
 }
 
-fn process_regex(input: &str, index: usize) -> Result<NFA, Error> {
-    println!("Input: {}", input);
+#[derive(Debug, Clone)]
+pub struct DFATransition {
+    pub symbol: char,
+    pub to_state: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct DFAState {
+    pub id: usize,
+    pub is_final: bool,
+    pub transitions: Vec<DFATransition>,
+    pub nfa_states: HashSet<usize>, // Qué estados del AFN representa este estado del AFD
+}
+
+#[derive(Debug, Clone)]
+pub struct DFA {
+    pub states: Vec<DFAState>,
+    pub start_state: usize,
+    pub final_states: HashSet<usize>,
+    pub alphabet: HashSet<char>,
+}
+
+impl DFAState {
+    pub fn new(id: usize, nfa_states: HashSet<usize>, nfa_final: usize) -> Self {
+        let is_final = nfa_states.contains(&nfa_final);
+        Self {
+            id,
+            is_final,
+            transitions: Vec::new(),
+            nfa_states,
+        }
+    }
     
+    pub fn add_transition(&mut self, symbol: char, to_state: usize) {
+        self.transitions.push(DFATransition { symbol, to_state });
+    }
+}
+
+impl DFA {
+    pub fn new() -> Self {
+        Self {
+            states: Vec::new(),
+            start_state: 0,
+            final_states: HashSet::new(),
+            alphabet: HashSet::new(),
+        }
+    }
+}
+
+// Paso 3: Conversión de AFN a AFD usando Construcción de Subconjuntos
+pub struct SubsetConstructor;
+
+impl SubsetConstructor {
+    fn epsilon_closure(nfa: &NFA, states: HashSet<usize>) -> HashSet<usize> {
+        let mut closure = states.clone();
+        let mut stack: Vec<usize> = states.into_iter().collect();
+        
+        while let Some(state_id) = stack.pop() {
+            if let Some(state) = nfa.states.iter().find(|s| s.id == state_id) {
+                for transition in &state.transitions {
+                    if transition.symbol.is_none() {
+                        if closure.insert(transition.to_state) {
+                            stack.push(transition.to_state);
+                        }
+                    }
+                }
+            }
+        }
+        closure
+    }
+    
+    fn move_states(nfa: &NFA, states: &HashSet<usize>, symbol: char) -> HashSet<usize> {
+        let mut next_states = HashSet::new();
+        
+        for &state_id in states {
+            if let Some(state) = nfa.states.iter().find(|s| s.id == state_id) {
+                for transition in &state.transitions {
+                    if let Some(trans_symbol) = transition.symbol {
+                        if trans_symbol == symbol {
+                            next_states.insert(transition.to_state);
+                        }
+                    }
+                }
+            }
+        }
+        next_states
+    }
+    
+    fn get_alphabet(nfa: &NFA) -> HashSet<char> {
+        let mut alphabet = HashSet::new();
+        for state in &nfa.states {
+            for transition in &state.transitions {
+                if let Some(symbol) = transition.symbol {
+                    alphabet.insert(symbol);
+                }
+            }
+        }
+        alphabet
+    }
+    
+    pub fn convert(nfa: &NFA) -> DFA {
+        let alphabet = Self::get_alphabet(nfa);
+        let mut dfa_states = Vec::new();
+        let mut state_map: HashMap<BTreeSet<usize>, usize> = HashMap::new();
+        let mut work_list = Vec::new();
+        let mut dfa_state_counter = 0;
+        
+        // Comenzar con la cerradura epsilon del estado inicial del AFN
+        let mut start_set = HashSet::new();
+        start_set.insert(nfa.start_state);
+        let start_closure = Self::epsilon_closure(nfa, start_set);
+        let start_sorted: BTreeSet<usize> = start_closure.iter().cloned().collect();
+        
+        let start_dfa_state = DFAState::new(dfa_state_counter, start_closure, nfa.final_state);
+        state_map.insert(start_sorted.clone(), dfa_state_counter);
+        dfa_states.push(start_dfa_state);
+        work_list.push(start_sorted);
+        dfa_state_counter += 1;
+        
+        while let Some(current_set) = work_list.pop() {
+            let current_states: HashSet<usize> = current_set.iter().cloned().collect();
+            let current_dfa_id = state_map[&current_set];
+            
+            for &symbol in &alphabet {
+                let next_states = Self::move_states(nfa, &current_states, symbol);
+                if !next_states.is_empty() {
+                    let next_closure = Self::epsilon_closure(nfa, next_states);
+                    let next_sorted: BTreeSet<usize> = next_closure.iter().cloned().collect();
+                    
+                    let next_dfa_id = if let Some(&existing_id) = state_map.get(&next_sorted) {
+                        existing_id
+                    } else {
+                        let new_dfa_state = DFAState::new(dfa_state_counter, next_closure, nfa.final_state);
+                        state_map.insert(next_sorted.clone(), dfa_state_counter);
+                        dfa_states.push(new_dfa_state);
+                        work_list.push(next_sorted);
+                        let new_id = dfa_state_counter;
+                        dfa_state_counter += 1;
+                        new_id
+                    };
+                    
+                    dfa_states[current_dfa_id].add_transition(symbol, next_dfa_id);
+                }
+            }
+        }
+        
+        // Recopilar estados finales
+        let mut final_states = HashSet::new();
+        for state in &dfa_states {
+            if state.is_final {
+                final_states.insert(state.id);
+            }
+        }
+        
+        DFA {
+            states: dfa_states,
+            start_state: 0,
+            final_states,
+            alphabet,
+        }
+    }
+}
+
+// Paso 4: Minimización del AFD usando el Algoritmo de Hopcroft
+pub struct DFAMinimizer;
+
+impl DFAMinimizer {
+    pub fn minimize(dfa: &DFA) -> DFA {
+        // Inicializar partición: estados finales vs estados no finales
+        let mut final_partition = HashSet::new();
+        let mut non_final_partition = HashSet::new();
+        
+        for state in &dfa.states {
+            if state.is_final {
+                final_partition.insert(state.id);
+            } else {
+                non_final_partition.insert(state.id);
+            }
+        }
+        
+        let mut partitions = Vec::new();
+        if !non_final_partition.is_empty() {
+            partitions.push(non_final_partition);
+        }
+        if !final_partition.is_empty() {
+            partitions.push(final_partition);
+        }
+        
+        let mut changed = true;
+        while changed {
+            changed = false;
+            let mut new_partitions = Vec::new();
+            
+            for partition in partitions {
+                let refined = Self::refine_partition(dfa, &partition, &new_partitions);
+                if refined.len() > 1 {
+                    changed = true;
+                }
+                new_partitions.extend(refined);
+            }
+            
+            partitions = new_partitions;
+        }
+        
+        Self::build_minimized_dfa(dfa, &partitions)
+    }
+    
+    fn refine_partition(dfa: &DFA, partition: &HashSet<usize>, all_partitions: &[HashSet<usize>]) -> Vec<HashSet<usize>> {
+        if partition.len() <= 1 {
+            return vec![partition.clone()];
+        }
+        
+        let mut groups: HashMap<Vec<Option<usize>>, HashSet<usize>> = HashMap::new();
+        
+        for &state_id in partition {
+            let state = dfa.states.iter().find(|s| s.id == state_id).unwrap();
+            let mut signature = Vec::new();
+            
+            for symbol in &dfa.alphabet {
+                let target = state.transitions.iter()
+                    .find(|t| t.symbol == *symbol)
+                    .map(|t| t.to_state);
+                
+                let target_partition = if let Some(target_state) = target {
+                    Self::find_partition_id(target_state, all_partitions)
+                } else {
+                    None
+                };
+                
+                signature.push(target_partition);
+            }
+            
+            groups.entry(signature).or_insert_with(HashSet::new).insert(state_id);
+        }
+        
+        groups.into_values().collect()
+    }
+    
+    fn find_partition_id(state: usize, partitions: &[HashSet<usize>]) -> Option<usize> {
+        for (i, partition) in partitions.iter().enumerate() {
+            if partition.contains(&state) {
+                return Some(i);
+            }
+        }
+        None
+    }
+    
+    fn build_minimized_dfa(original_dfa: &DFA, partitions: &[HashSet<usize>]) -> DFA {
+        let mut state_to_partition: HashMap<usize, usize> = HashMap::new();
+        for (i, partition) in partitions.iter().enumerate() {
+            for &state in partition {
+                state_to_partition.insert(state, i);
+            }
+        }
+        
+        let mut minimized_states = Vec::new();
+        let mut final_states = HashSet::new();
+        
+        for (partition_id, partition) in partitions.iter().enumerate() {
+            let representative = *partition.iter().next().unwrap();
+            let original_state = original_dfa.states.iter().find(|s| s.id == representative).unwrap();
+            
+            let mut new_state = DFAState {
+                id: partition_id,
+                is_final: original_state.is_final,
+                transitions: Vec::new(),
+                nfa_states: HashSet::new(), // No se necesita para AFD minimizado
+            };
+            
+            if new_state.is_final {
+                final_states.insert(partition_id);
+            }
+            
+            // Agregar transiciones
+            for symbol in &original_dfa.alphabet {
+                if let Some(transition) = original_state.transitions.iter().find(|t| t.symbol == *symbol) {
+                    let target_partition = state_to_partition[&transition.to_state];
+                    new_state.add_transition(*symbol, target_partition);
+                }
+            }
+            
+            minimized_states.push(new_state);
+        }
+        
+        let start_partition = state_to_partition[&original_dfa.start_state];
+        
+        DFA {
+            states: minimized_states,
+            start_state: start_partition,
+            final_states,
+            alphabet: original_dfa.alphabet.clone(),
+        }
+    }
+}
+
+// Visualizador de AFD (similar al visualizador de AFN)
+pub struct DFAVisualizer;
+
+impl DFAVisualizer {
+    pub fn to_dot(dfa: &DFA, title: &str) -> String {
+        let mut dot = String::new();
+        dot.push_str(&format!("digraph {} {{\n", title));
+        dot.push_str("    rankdir=LR;\n");
+        dot.push_str("    node [shape=circle];\n");
+        
+        // Marcar estado inicial con flecha entrante
+        dot.push_str(&format!("    start [shape=none, label=\"\"];\n"));
+        dot.push_str(&format!("    start -> {};\n", dfa.start_state));
+        
+        // Marcar estados finales con doble círculo
+        for &final_state in &dfa.final_states {
+            dot.push_str(&format!("    {} [shape=doublecircle];\n", final_state));
+        }
+        
+        // Agregar todas las transiciones
+        for state in &dfa.states {
+            for transition in &state.transitions {
+                dot.push_str(&format!("    {} -> {} [label=\"{}\"];\n", 
+                    state.id, transition.to_state, transition.symbol));
+            }
+        }
+        
+        dot.push_str("}\n");
+        dot
+    }
+    
+    pub fn save_to_file(dfa: &DFA, filename: &str, title: &str) -> Result<(), Error> {
+        let dot_content = Self::to_dot(dfa, title);
+        fs::write(filename, &dot_content).map_err(|_| Error::File)?;
+        
+        // Generar PNG
+        let png_filename = filename.replace(".dot", ".png");
+        let output = Command::new("dot")
+            .args(&["-Tpng", filename, "-o", &png_filename])
+            .output();
+        
+        match output {
+            Ok(_) => {
+                println!("{} guardado en: {}", title, filename);
+                println!("PNG generado en: {}", png_filename);
+            }
+            Err(_) => {
+                println!("{} guardado en: {}", title, filename);
+                println!("Error generando PNG (brew install graphviz)");
+            }
+        }
+        
+        Ok(())
+    }
+
+    pub fn print_dfa_details(dfa: &DFA, title: &str) {
+        println!("\n===================");
+        println!("{}", title);
+        println!("Inicio: {}", dfa.start_state);
+        println!("Finales: {:?}", dfa.final_states);
+        println!("Alfabeto: {:?}", dfa.alphabet);
+        println!("\nEstados: {}", dfa.states.len());
+        println!("\nTransiciones:");
+        
+        for state in &dfa.states {
+            for transition in &state.transitions {
+                println!("  Estado {} --[{}]--> Estado {}", 
+                    state.id, transition.symbol, transition.to_state);
+            }
+        }
+        println!("===================\n");
+    }
+}
+
+// Simulador de AFD
+pub struct DFASimulator;
+
+impl DFASimulator {
+    pub fn simulate(dfa: &DFA, input: &str) -> bool {
+        let mut current_state = dfa.start_state;
+        
+        for ch in input.chars() {
+            if let Some(state) = dfa.states.iter().find(|s| s.id == current_state) {
+                if let Some(transition) = state.transitions.iter().find(|t| t.symbol == ch) {
+                    current_state = transition.to_state;
+                } else {
+                    return false; // No hay transición para este símbolo
+                }
+            } else {
+                return false; // Estado inválido
+            }
+        }
+        
+        dfa.final_states.contains(&current_state)
+    }
+}
+
+// ===== REEMPLAZAR LA FUNCIÓN process_regex EXISTENTE CON ESTA =====
+fn process_regex(input: &str, index: usize) -> Result<DFA, Error> {
+    println!("Entrada: {}", input);
+    
+    // Paso 1: Tokenizar y analizar a notación postfija
     let mut tokenizer = Tokenizer::new(input);
     let tokens = tokenizer.tokenize()?;
     
     let mut parser = Parser::new(tokens);
     let postfix = parser.parse()?;
     
-    println!("Postfix: {:?}", postfix);
+    println!("Postfijo: {:?}", postfix);
     
+    // Construir árbol sintáctico
     let tree_builder = SyntaxTreeBuilder::new(postfix);
     let syntax_tree = tree_builder.build_tree()?;
     
     let visualizer = TreeVisualizer::new();
     visualizer.print_tree(&syntax_tree);
 
+    // Paso 2: Construir AFN usando construcción de Thompson
     let mut thompson = ThompsonBuilder::new();
     let nfa = thompson.build_from_tree(&syntax_tree);
     
     NFAVisualizer::print_nfa_details(&nfa);
     
-    let filename = format!("nfa_{}.dot", index);
-    NFAVisualizer::save_to_file(&nfa, &filename)?;
+    let nfa_filename = format!("afn_{}.dot", index);
+    NFAVisualizer::save_to_file(&nfa, &nfa_filename)?;
     
-    Ok((nfa))
+    // Paso 3: Convertir AFN a AFD usando construcción de subconjuntos
+    println!("\n--- Convirtiendo AFN a AFD ---");
+    let dfa = SubsetConstructor::convert(&nfa);
+    DFAVisualizer::print_dfa_details(&dfa, "AFD");
+    
+    let dfa_filename = format!("afd_{}.dot", index);
+    DFAVisualizer::save_to_file(&dfa, &dfa_filename, "AFD")?;
+    
+    // Paso 4: Minimizar AFD
+    println!("\n--- Minimizando AFD ---");
+    let minimized_dfa = DFAMinimizer::minimize(&dfa);
+    DFAVisualizer::print_dfa_details(&minimized_dfa, "AFD Minimizado");
+    
+    let min_dfa_filename = format!("afd_min_{}.dot", index);
+    DFAVisualizer::save_to_file(&minimized_dfa, &min_dfa_filename, "AFDMinimizado")?;
+    
+    println!("\nComparación:");
+    println!("Estados AFN: {}", nfa.states.len());
+    println!("Estados AFD: {}", dfa.states.len());
+    println!("Estados AFD Minimizado: {}", minimized_dfa.states.len());
+    
+    Ok(minimized_dfa)
 }
+
 
 // Precheck if a string contains regex operators
 fn is_regex(s: &str) -> bool {
@@ -799,12 +1217,13 @@ fn main() {
             println!("\nProcesando expresión regular {}", regex_count);
             
             match process_regex(line, regex_count) {
-                Ok(nfa) => {
+                Ok(minimized_dfa) => {
                     i += 1;
                     while i < lines.len() && !is_regex(lines[i]) && !lines[i].trim().is_empty() {
                         let test_string = lines[i].trim();
                         
-                        let result = NFASimulator::simulate(&nfa, test_string);
+                        let result = DFASimulator::simulate(&minimized_dfa, test_string);
+
                         println!("w = '{}': {}", test_string, if result { "sí" } else { "no" });
                         
                         i += 1;
