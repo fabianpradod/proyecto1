@@ -1,0 +1,11 @@
+digraph AFDMinimizado {
+    rankdir=LR;
+    node [shape=circle];
+    start [shape=none, label=""];
+    start -> 1;
+    2 [shape=doublecircle];
+    0 -> 1 [label="b"];
+    0 -> 1 [label="c"];
+    1 -> 2 [label="d"];
+    1 -> 0 [label="a"];
+}
