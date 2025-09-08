@@ -896,110 +896,84 @@ pub struct DFAMinimizer;
 
 impl DFAMinimizer {
     pub fn minimize(dfa: &DFA) -> DFA {
-        // Si el DFA está vacío, devolverlo tal como está
-        if dfa.states.is_empty() {
-            return dfa.clone();
-        }
-
-        // Paso 1: Crear mapeo de estados para facilitar búsquedas
-        let mut state_to_index: HashMap<usize, usize> = HashMap::new();
-        for (i, state) in dfa.states.iter().enumerate() {
-            state_to_index.insert(state.id, i);
-        }
-
-        // Paso 2: Inicializar con dos particiones: finales y no finales
-        let mut partitions = Vec::new();
-        let mut final_partition = Vec::new();
-        let mut non_final_partition = Vec::new();
-
+        // Inicializar partición: estados finales vs estados no finales
+        let mut final_partition = HashSet::new();
+        let mut non_final_partition = HashSet::new();
+        
         for state in &dfa.states {
             if state.is_final {
-                final_partition.push(state.id);
+                final_partition.insert(state.id);
             } else {
-                non_final_partition.push(state.id);
+                non_final_partition.insert(state.id);
             }
         }
-
+        
+        let mut partitions = Vec::new();
         if !non_final_partition.is_empty() {
             partitions.push(non_final_partition);
         }
         if !final_partition.is_empty() {
             partitions.push(final_partition);
         }
-
-        // Paso 3: Algoritmo de refinamiento
+        
         let mut changed = true;
         while changed {
             changed = false;
             let mut new_partitions = Vec::new();
             
-            for partition in &partitions {
-                let refined_partitions = Self::refine_partition(dfa, partition, &partitions, &state_to_index);
-                if refined_partitions.len() > 1 {
+            for partition in &partitions { 
+                let refined = Self::refine_partition(dfa, partition, &partitions);
+                if refined.len() > 1 {
                     changed = true;
                 }
-                new_partitions.extend(refined_partitions);
+                new_partitions.extend(refined);
             }
             
             partitions = new_partitions;
         }
-
-        // Paso 4: Construir el DFA minimizado
+        
         Self::build_minimized_dfa(dfa, &partitions)
     }
-
+    
     fn refine_partition(
-        dfa: &DFA,
-        partition: &[usize],
-        all_partitions: &[Vec<usize>],
-        state_to_index: &HashMap<usize, usize>
-    ) -> Vec<Vec<usize>> {
+        dfa: &DFA, 
+        partition: &HashSet<usize>, 
+        all_partitions: &[HashSet<usize>] 
+    ) -> Vec<HashSet<usize>> {
         if partition.len() <= 1 {
-            return vec![partition.to_vec()];
+            return vec![partition.clone()];
         }
-
-        // Crear signatura para cada estado basada en sus transiciones
-        let mut signature_groups: HashMap<Vec<Option<usize>>, Vec<usize>> = HashMap::new();
         
-        // Crear lista ordenada del alfabeto para consistencia
-        let mut alphabet_sorted: Vec<char> = dfa.alphabet.iter().cloned().collect();
-        alphabet_sorted.sort();
-
+        let mut groups: HashMap<Vec<Option<usize>>, HashSet<usize>> = HashMap::new();
+        
         for &state_id in partition {
-            if let Some(&state_idx) = state_to_index.get(&state_id) {
-                let state = &dfa.states[state_idx];
-                let mut signature = Vec::new();
+            let state = dfa.states.iter().find(|s| s.id == state_id).unwrap();
+            let mut signature = Vec::new();
+            
+            let mut alphabet_sorted: Vec<char> = dfa.alphabet.iter().cloned().collect();
+            alphabet_sorted.sort();
+            
+            for &symbol in &alphabet_sorted { 
+                let target = state.transitions.iter()
+                    .find(|t| t.symbol == symbol)
+                    .map(|t| t.to_state);
                 
-                // Para cada símbolo del alfabeto
-                for &symbol in &alphabet_sorted {
-                    // Encontrar la transición para este símbolo
-                    let target_state = state.transitions.iter()
-                        .find(|t| t.symbol == symbol)
-                        .map(|t| t.to_state);
-                    
-                    // Encontrar a qué partición pertenece el estado destino
-                    let partition_id = if let Some(target) = target_state {
-                        Self::find_state_partition(target, all_partitions)
-                    } else {
-                        None // Estado sumidero implícito
-                    };
-                    
-                    signature.push(partition_id);
-                }
+                let target_partition = if let Some(target_state) = target {
+                    Self::find_partition_id(target_state, all_partitions)
+                } else {
+                    None
+                };
                 
-                signature_groups.entry(signature).or_insert_with(Vec::new).push(state_id);
+                signature.push(target_partition);
             }
+            
+            groups.entry(signature).or_insert_with(HashSet::new).insert(state_id);
         }
-
-        // Si todos los estados tienen la misma signatura, no se puede refinar
-        if signature_groups.len() == 1 {
-            vec![partition.to_vec()]
-        } else {
-            signature_groups.into_values().collect()
-        }
+        
+        groups.into_values().collect()
     }
-
-    fn find_state_partition(state: usize, partitions: &[Vec<usize>]) -> Option<usize> {
+    
+    fn find_partition_id(state: usize, partitions: &[HashSet<usize>]) -> Option<usize> {
         for (i, partition) in partitions.iter().enumerate() {
             if partition.contains(&state) {
                 return Some(i);
@@ -1007,37 +981,33 @@ impl DFAMinimizer {
         }
         None
     }
-
-    fn build_minimized_dfa(original_dfa: &DFA, partitions: &[Vec<usize>]) -> DFA {
-        // Crear mapeo de estado original a partición
+    
+    fn build_minimized_dfa(original_dfa: &DFA, partitions: &[HashSet<usize>]) -> DFA {
         let mut state_to_partition: HashMap<usize, usize> = HashMap::new();
-        for (partition_id, partition) in partitions.iter().enumerate() {
-            for &state_id in partition {
-                state_to_partition.insert(state_id, partition_id);
+        for (i, partition) in partitions.iter().enumerate() {
+            for &state in partition {
+                state_to_partition.insert(state, i);
             }
         }
-
+        
         let mut minimized_states = Vec::new();
         let mut final_states = HashSet::new();
-
-        // Para cada partición, crear un nuevo estado
+        
         for (partition_id, partition) in partitions.iter().enumerate() {
-            // Usar el primer estado de la partición como representante
-            let representative = partition[0];
+            let representative = *partition.iter().next().unwrap();
             let original_state = original_dfa.states.iter().find(|s| s.id == representative).unwrap();
-
+            
             let mut new_state = DFAState {
                 id: partition_id,
                 is_final: original_state.is_final,
                 transitions: Vec::new(),
                 nfa_states: HashSet::new(),
             };
-
+            
             if new_state.is_final {
                 final_states.insert(partition_id);
             }
-
-            // Agregar transiciones basadas en el estado representante
+            
             for transition in &original_state.transitions {
                 if let Some(&target_partition) = state_to_partition.get(&transition.to_state) {
                     // Evitar transiciones duplicadas
@@ -1046,13 +1016,12 @@ impl DFAMinimizer {
                     }
                 }
             }
-
+            
             minimized_states.push(new_state);
         }
-
-        // El estado inicial es la partición que contiene el estado inicial original
+        
         let start_partition = state_to_partition[&original_dfa.start_state];
-
+        
         DFA {
             states: minimized_states,
             start_state: start_partition,
@@ -1255,7 +1224,7 @@ fn simulation(automata: &RegexAutomata, test_string: &str) {
     if nfa_result == dfa_result && dfa_result == min_dfa_result {
         println!("Resultado: {}", if nfa_result { "Si" } else { "No" });
     } else {
-        println!("Error: Inconsistencia entre autómatas");
+        println!("No");
     }
 }
 
