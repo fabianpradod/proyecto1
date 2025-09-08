@@ -2,3 +2,8 @@ target/
 **/*.rs.bk
 Cargo.lock
 .DS_Store
+
+
+# Added by cargo
+
+/target

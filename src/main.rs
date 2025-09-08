@@ -8,7 +8,7 @@ use std::process::Command;
 use std::collections::{HashMap, HashSet, BTreeSet};
 
 // Fabian Prado - Sofia Lopez
-// Laboratorio 4 - Teoría de la Computación
+// Proyecto 1 - Teoría de la Computación
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Token {
@@ -1120,18 +1120,24 @@ impl DFASimulator {
     }
 }
 
-// ===== REEMPLAZAR LA FUNCIÓN process_regex EXISTENTE CON ESTA =====
-fn process_regex(input: &str, index: usize) -> Result<DFA, Error> {
-    println!("Entrada: {}", input);
+#[derive(Clone)]
+pub struct RegexAutomata {
+    pub regex: String,
+    pub nfa: NFA,
+    pub dfa: DFA,
+    pub minimized_dfa: DFA,
+}
+
+fn process_regex(input: &str, index: usize) -> Result<RegexAutomata, Error> {
+    println!("Expresión regular: {}", input);
     
-    // Paso 1: Tokenizar y analizar a notación postfija
     let mut tokenizer = Tokenizer::new(input);
     let tokens = tokenizer.tokenize()?;
     
     let mut parser = Parser::new(tokens);
     let postfix = parser.parse()?;
     
-    println!("Postfijo: {:?}", postfix);
+    println!("Notación postfix: {:?}", postfix);
     
     // Construir árbol sintáctico
     let tree_builder = SyntaxTreeBuilder::new(postfix);
@@ -1170,27 +1176,60 @@ fn process_regex(input: &str, index: usize) -> Result<DFA, Error> {
     println!("Estados AFD: {}", dfa.states.len());
     println!("Estados AFD Minimizado: {}", minimized_dfa.states.len());
     
-    Ok(minimized_dfa)
+    Ok(RegexAutomata {
+        regex: input.to_string(),
+        nfa: nfa.clone(),
+        dfa: dfa.clone(),
+        minimized_dfa,
+    })
 }
 
-
-// Precheck if a string contains regex operators
-fn is_regex(s: &str) -> bool {
-    s.contains('*') || s.contains('+') || s.contains('?') || 
-    s.contains('|') || s.contains('(') || s.contains(')')
+fn is_regex_line(line: &str) -> bool {
+    line.trim().starts_with("r=")
 }
+
+fn is_string_line(line: &str) -> bool {
+    line.trim().starts_with("w=")
+}
+
+fn extract_content<'a>(line: &'a str, prefix: &str) -> &'a str {
+    line.trim().strip_prefix(prefix).unwrap_or("").trim()
+}
+
+// Función para simular una cadena en todos los autómatas
+fn simulation(automata: &RegexAutomata, test_string: &str) {
+    println!("\n--- Probando cadena: '{}' en expresión regular: '{}' ---", test_string, automata.regex);
+    
+    // Simular en AFN
+    let nfa_result = NFASimulator::simulate(&automata.nfa, test_string);
+    println!("AFN: w = '{}' → {}", test_string, if nfa_result { "sí" } else { "no" });
+    
+    // Simular en AFD
+    let dfa_result = DFASimulator::simulate(&automata.dfa, test_string);
+    println!("AFD: w = '{}' → {}", test_string, if dfa_result { "sí" } else { "no" });
+    
+    // Simular en AFD minimizado
+    let min_dfa_result = DFASimulator::simulate(&automata.minimized_dfa, test_string);
+    println!("AFD Minimizado: w = '{}' → {}", test_string, if min_dfa_result { "sí" } else { "no" });
+    
+    // Verificar consistencia
+    if nfa_result == dfa_result && dfa_result == min_dfa_result {
+        println!("Resultado: {}", if nfa_result { "Si" } else { "No" });
+    } else {
+        println!("No");
+    }
+}
+
 fn main() {
     let args: Vec<String> = env::args().collect();
     if args.len() != 2 {
-        println!("Usage: {} <input.txt>", args[0]);
+        println!("Uso: {} <input.txt>", args[0]);
         return;
     }
 
     let file_path = &args[1];
     
     let current_dir = env::current_dir().unwrap();
-    println!("Directorio actual: {:?}", current_dir);
-    println!("Buscando archivo: {:?}", file_path);
     
     let content = match fs::read_to_string(file_path) {
         Ok(content) => content,
@@ -1204,39 +1243,55 @@ fn main() {
     let lines: Vec<&str> = content.lines().collect();
     let mut i = 0;
     let mut regex_count = 0;
+    let mut current_automata: Option<RegexAutomata> = None;
     
     while i < lines.len() {
         let line = lines[i].trim();
+        
         if line.is_empty() {
             i += 1;
             continue;
         }
         
-        if is_regex(line) {
+        if is_regex_line(line) {
             regex_count += 1;
-            println!("\nProcesando expresión regular {}", regex_count);
+            let regex_content = extract_content(line, "r=");
             
-            match process_regex(line, regex_count) {
-                Ok(minimized_dfa) => {
-                    i += 1;
-                    while i < lines.len() && !is_regex(lines[i]) && !lines[i].trim().is_empty() {
-                        let test_string = lines[i].trim();
-                        
-                        let result = DFASimulator::simulate(&minimized_dfa, test_string);
-
-                        println!("w = '{}': {}", test_string, if result { "sí" } else { "no" });
-                        
-                        i += 1;
-                    }
+            println!("{}", "=".repeat(60));
+            println!("EXPRESIÓN REGULAR #{}", regex_count);
+            println!("{}", "=".repeat(60));
+            
+            match process_regex(regex_content, regex_count) {
+                Ok(automata) => {
+                    current_automata = Some(automata);
                 }
                 Err(e) => {
-                    println!("Error procesando '{}': {:?}", line, e);
-                    i += 1;
+                    println!("Error procesando expresión regular '{}': {:?}", regex_content, e);
+                    current_automata = None;
                 }
             }
+            i += 1;
+        } else if is_string_line(line) {
+            let test_string = extract_content(line, "w=");
+            
+            if let Some(ref automata) = current_automata {
+                simulation(automata, test_string);
+            } else {
+                println!("Error: No hay expresión regular cargada para probar la cadena '{}'", test_string);
+            }
+            i += 1;
         } else {
-            println!("Línea inválida ignorada: '{}'", line);
+            println!("Línea ignorada (formato inválido): '{}'", line);
+            println!("  Las líneas deben empezar con 'r=' (expresión regular) o 'w=' (cadena de prueba)");
             i += 1;
         }
+    }
+    
+    if regex_count == 0 {
+        println!("\n No se encontraron expresiones regulares en el archivo.");
+    } else {
+        println!("\n{}", "=".repeat(60));
+        println!("SIMULACION COMPLETADA");
+        println!("{}", "=".repeat(60));
     }
 }

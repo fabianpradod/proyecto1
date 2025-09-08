@@ -1,4 +1,9 @@
-(a*|b*)+
-((E|a)|b*)*
-(a|b)*abb(a|b)*
-0?(1?)?0*
+r=(b|a)*abb(a|b)*
+w=babbaaaa
+w=abb
+w=babba
+
+r=a*b+
+w=aaabbb
+w=b
+w=ab
