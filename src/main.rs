@@ -54,8 +54,20 @@ impl Tokenizer {
                     self.pos += 1;
                     let mut chars = Vec::new();
                     while self.pos < self.chars.len() && self.chars[self.pos] != ']' {
-                        chars.push(self.chars[self.pos]);
-                        self.pos += 1;
+                        if self.pos + 2 < self.chars.len() 
+                            && self.chars[self.pos + 1] == '-' 
+                            && self.chars[self.pos + 2] != ']' 
+                        {
+                            let start = self.chars[self.pos];
+                            let end = self.chars[self.pos + 2];
+                            for c in start..=end {
+                                chars.push(c);
+                            }
+                            self.pos += 3;
+                        } else {
+                            chars.push(self.chars[self.pos]);
+                            self.pos += 1;
+                        }
                     }
                     tokens.push(Token::CharClass(chars));
                 }
@@ -95,12 +107,20 @@ pub struct Parser {
 
 impl Parser {
     pub fn new(tokens: Vec<Token>) -> Self {
-        Self { tokens}
+        Self { tokens }
+    }
+
+    fn precedence(t: &Token) -> i32 {
+        match t {
+            Token::Concatenation => 2, // higher
+            Token::Alternation   => 1, // lower
+            _ => -1,
+        }
     }
 
     pub fn parse(&mut self) -> Result<Vec<Token>, Error> {
         let mut output = Vec::new();
-        let mut stack = Vec::new();
+        let mut stack: Vec<Token> = Vec::new();
 
         for token in &self.tokens {
             match token {
@@ -113,17 +133,14 @@ impl Parser {
                         output.push(op);
                     }
                 }
-                Token::Concatenation => {
+                Token::Concatenation | Token::Alternation => {
                     while let Some(top) = stack.last() {
                         if matches!(top, Token::LeftParen) { break; }
-                        output.push(stack.pop().unwrap());
-                    }
-                    stack.push(token.clone());
-                }
-                Token::Alternation => {
-                    while let Some(top) = stack.last() {
-                        if matches!(top, Token::LeftParen) { break; }
-                        output.push(stack.pop().unwrap());
+                        if Self::precedence(top) >= Self::precedence(token) {
+                            output.push(stack.pop().unwrap());
+                        } else {
+                            break;
+                        }
                     }
                     stack.push(token.clone());
                 }
@@ -361,12 +378,9 @@ impl ThompsonBuilder {
     pub fn build_from_tree(&mut self, tree: &TreeNode) -> NFA {
         match &tree.token {
             Token::Literal(c) => {
-                if *c == 'ε' {
-                    self.build_epsilon()
-                } else {
-                    self.build_literal(*c)
-                }
+                if *c == 'ε' { self.build_epsilon() } else { self.build_literal(*c) }
             }
+            Token::CharClass(chars) => self.build_char_class(chars),
             Token::Concatenation => {
                 let left = self.build_from_tree(&tree.children[0]);
                 let right = self.build_from_tree(&tree.children[1]);
@@ -390,6 +404,27 @@ impl ThompsonBuilder {
                 self.zero_or_one(child)
             }
             _ => panic!("Invalid token: {:?}", tree.token),
+        }
+    }
+    
+    fn build_char_class(&mut self, chars: &Vec<char>) -> NFA {
+        let start = self.state_counter;
+        let end = self.state_counter + 1;
+        self.state_counter += 2;
+
+        let mut states = vec![
+            NFAState::new(start, false),
+            NFAState::new(end, true),
+        ];
+
+        for &c in chars {
+            states[0].add_transition(Some(c), end);
+        }
+
+        NFA {
+            states,
+            start_state: start,
+            final_state: end,
         }
     }
     

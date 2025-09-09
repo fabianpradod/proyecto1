@@ -1,30 +1,3 @@
-r=((a|b)*c)*
-w=
-w=c
-w=cc
-w=ac
-w=bc
-w=acc
-w=bcc
-w=acbc
-w=abcc
-w=a
-
-r=(a(b|c))*d
-w=d
-w=abd
-w=acd
-w=ababd
-w=acadd
-w=abcd
-w=acbd
-w=a
-
-r=a((b|c)*d)*e
-w=ae
-w=abde
-w=acde
-w=abcde
-w=abdcde
-w=a
-w=e
+r=if\((a|x|t)+\)\{y\}(else\{n\})?
+w= if(a){y}else{n}
+w= if(){y}else{n}
